@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   push:
     branches: [ "claude/youtube-video-translator-LvU39", "main" ]
-  workflow_dispatch:   # кнопка "Run workflow" на GitHub
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -25,44 +25,40 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # GitHub ubuntu-latest has Android SDK at $ANDROID_SDK_ROOT
+      # We need to install the exact NDK version React Native requires
+      - name: Install NDK and build tools
+        run: |
+          # Find sdkmanager — it may be in any cmdline-tools version folder
+          SDKMANAGER=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name "sdkmanager" -type f 2>/dev/null | head -1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found, trying PATH"
+            SDKMANAGER=$(which sdkmanager)
+          fi
+          echo "Using sdkmanager: $SDKMANAGER"
+          echo "y" | "$SDKMANAGER" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;26.1.10909125"
 
-      - name: Install dependencies
+      - name: Write local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+          echo "ndk.dir=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> android/local.properties
+          cat android/local.properties
+
+      - name: Install JS dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Build Android APK (release)
+      - name: Build debug APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease \
-            -Pandroid.signingStoreFile=app/debug.keystore \
-            -Pandroid.signingStorePassword=android \
-            -Pandroid.signingKeyAlias=androiddebugkey \
-            -Pandroid.signingKeyPassword=android \
-            --no-daemon
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1
 
-      - name: Find APK
-        id: find_apk
-        run: |
-          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
-          echo "apk_path=$APK" >> $GITHUB_OUTPUT
-          echo "Found: $APK"
-
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: youtube-ru-translator
-          path: ${{ steps.find_apk.outputs.apk_path }}
+          path: android/app/build/outputs/apk/debug/*.apk
           retention-days: 30
-
-      - name: Create Release (only on main)
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: "YouTube RU Translator v${{ github.run_number }}"
-          files: ${{ steps.find_apk.outputs.apk_path }}
-          generate_release_notes: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

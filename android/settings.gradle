@@ -21,7 +21,7 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
   }
 }
 
-rootProject.name = 'YouTube Переводчик'
+rootProject.name = 'YouTubeRuTranslator'
 
 dependencyResolutionManagement {
   versionCatalogs {
