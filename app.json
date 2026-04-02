@@ -6,7 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "scheme": "ytrutranslator",
     "splash": {
       "backgroundColor": "#0f0f0f"
     },
@@ -22,12 +21,8 @@
       ]
     },
     "plugins": [
-      "expo-router",
       "expo-secure-store",
       "expo-av"
-    ],
-    "experiments": {
-      "typedRoutes": true
-    }
+    ]
   }
 }
