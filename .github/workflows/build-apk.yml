@@ -25,36 +25,33 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # GitHub ubuntu-latest has Android SDK at $ANDROID_SDK_ROOT
-      # We need to install the exact NDK version React Native requires
-      - name: Install NDK and build tools
+      - name: Install Android SDK components
         run: |
-          # Find sdkmanager — it may be in any cmdline-tools version folder
-          SDKMANAGER=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name "sdkmanager" -type f 2>/dev/null | head -1)
-          if [ -z "$SDKMANAGER" ]; then
-            echo "sdkmanager not found, trying PATH"
-            SDKMANAGER=$(which sdkmanager)
-          fi
-          echo "Using sdkmanager: $SDKMANAGER"
+          # Find sdkmanager
+          SDKMANAGER=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name "sdkmanager" -type f 2>/dev/null | sort | tail -1)
+          echo "sdkmanager: $SDKMANAGER"
           echo "y" | "$SDKMANAGER" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
-            "ndk;26.1.10909125"
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1"
 
       - name: Write local.properties
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
           echo "ndk.dir=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> android/local.properties
-          cat android/local.properties
 
       - name: Install JS dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Build debug APK
+      - name: Build debug APK (arm64 only)
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1
+          ./gradlew assembleDebug \
+            -PactiveArchitectures=arm64-v8a \
+            --no-daemon \
+            --stacktrace 2>&1
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
