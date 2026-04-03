@@ -21,8 +21,7 @@
       ]
     },
     "plugins": [
-      "expo-secure-store",
-      "expo-av"
+      "expo-secure-store"
     ]
   }
 }

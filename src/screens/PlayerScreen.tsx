@@ -22,7 +22,6 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
-import { Audio } from 'expo-av';
 
 import {
   parseVideoId,
@@ -65,10 +64,6 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
   // Load settings on mount
   useEffect(() => {
     (async () => {
-      await Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-      });
       const s = await loadSettings();
       setSettings(s);
       audioQueueRef.current = new AudioQueue(settingsToTTSConfig(s));
