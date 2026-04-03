@@ -1,12 +1,11 @@
 /**
- * SettingsScreen — configure API keys, TTS provider, voice options.
+ * SettingsScreen — speech rate and display options.
  */
 
 import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
-  TextInput,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
@@ -17,12 +16,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import {
-  loadSettings,
-  saveSettings,
-  AppSettings,
-} from '../services/SettingsService';
-import { ELEVENLABS_VOICES, TTSProvider } from '../services/TTSService';
+import { loadSettings, saveSettings, AppSettings } from '../services/SettingsService';
 
 export function SettingsScreen({ onBack }: { onBack: () => void }) {
   const insets = useSafeAreaInsets();
@@ -41,7 +35,7 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
     setSaving(true);
     try {
       await saveSettings(s);
-      Alert.alert('Сохранено', 'Настройки сохранены успешно.');
+      Alert.alert('Сохранено', 'Настройки сохранены.');
       onBack();
     } catch (err: any) {
       Alert.alert('Ошибка', err?.message ?? 'Не удалось сохранить настройки');
@@ -69,15 +63,16 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
           <View style={{ width: 80 }} />
         </View>
 
-        {/* General */}
-        <Section title="Основные">
-          <Row label="Перевод включён">
-            <Switch
-              value={s.translationEnabled}
-              onValueChange={(v) => update({ translationEnabled: v })}
-              trackColor={{ true: '#ff0000' }}
-            />
-          </Row>
+        {/* About */}
+        <View style={styles.infoBox}>
+          <Text style={styles.infoText}>
+            Перевод бесплатный — субтитры переводятся напрямую через YouTube (Google Translate).{'\n'}
+            API ключи не нужны.
+          </Text>
+        </View>
+
+        {/* Display */}
+        <Section title="Отображение">
           <Row label="Показывать текст">
             <Switch
               value={s.showTextOverlay}
@@ -87,134 +82,16 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
           </Row>
         </Section>
 
-        {/* Claude API */}
-        <Section title="Claude API (для перевода)">
-          <Text style={styles.hint}>
-            Получите ключ на console.anthropic.com
-          </Text>
-          <TextInput
-            style={styles.input}
-            placeholder="sk-ant-api03-..."
-            placeholderTextColor="#555"
-            value={s.anthropicApiKey}
-            onChangeText={(v) => update({ anthropicApiKey: v })}
-            secureTextEntry
-            autoCapitalize="none"
-          />
-        </Section>
-
-        {/* TTS Provider */}
-        <Section title="Голос (TTS)">
-          {(['elevenlabs', 'openai', 'device'] as TTSProvider[]).map((p) => (
-            <TouchableOpacity
-              key={p}
-              style={[styles.radioRow, s.ttsProvider === p && styles.radioRowActive]}
-              onPress={() => update({ ttsProvider: p })}
-            >
-              <View style={[styles.radio, s.ttsProvider === p && styles.radioSelected]} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.radioLabel}>
-                  {p === 'elevenlabs' && '🎙️ ElevenLabs — лучшее качество'}
-                  {p === 'openai' && '🤖 OpenAI TTS — очень хорошее'}
-                  {p === 'device' && '📱 Системный голос — бесплатно'}
-                </Text>
-                <Text style={styles.radioHint}>
-                  {p === 'elevenlabs' && 'Требует API ключ ElevenLabs'}
-                  {p === 'openai' && 'Требует API ключ OpenAI'}
-                  {p === 'device' && 'Использует TTS движок Android'}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          ))}
-        </Section>
-
-        {/* ElevenLabs */}
-        {s.ttsProvider === 'elevenlabs' && (
-          <Section title="ElevenLabs">
-            <Text style={styles.hint}>Ключ на elevenlabs.io</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="API Key..."
-              placeholderTextColor="#555"
-              value={s.elevenLabsApiKey}
-              onChangeText={(v) => update({ elevenLabsApiKey: v })}
-              secureTextEntry
-              autoCapitalize="none"
-            />
-            <Text style={styles.label}>Голос:</Text>
-            {ELEVENLABS_VOICES.map((v) => (
-              <TouchableOpacity
-                key={v.id}
-                style={[
-                  styles.radioRow,
-                  s.elevenLabsVoiceId === v.id && styles.radioRowActive,
-                ]}
-                onPress={() => update({ elevenLabsVoiceId: v.id })}
-              >
-                <View
-                  style={[
-                    styles.radio,
-                    s.elevenLabsVoiceId === v.id && styles.radioSelected,
-                  ]}
-                />
-                <Text style={styles.radioLabel}>{v.name}</Text>
-              </TouchableOpacity>
-            ))}
-          </Section>
-        )}
-
-        {/* OpenAI */}
-        {s.ttsProvider === 'openai' && (
-          <Section title="OpenAI TTS">
-            <Text style={styles.hint}>Ключ на platform.openai.com</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="sk-..."
-              placeholderTextColor="#555"
-              value={s.openAiApiKey}
-              onChangeText={(v) => update({ openAiApiKey: v })}
-              secureTextEntry
-              autoCapitalize="none"
-            />
-            <Text style={styles.label}>Голос:</Text>
-            {(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'] as const).map(
-              (v) => (
-                <TouchableOpacity
-                  key={v}
-                  style={[
-                    styles.radioRow,
-                    s.openAiVoice === v && styles.radioRowActive,
-                  ]}
-                  onPress={() => update({ openAiVoice: v })}
-                >
-                  <View
-                    style={[styles.radio, s.openAiVoice === v && styles.radioSelected]}
-                  />
-                  <Text style={styles.radioLabel}>{v}</Text>
-                </TouchableOpacity>
-              ),
-            )}
-          </Section>
-        )}
-
         {/* Speech rate */}
         <Section title="Скорость речи">
           <View style={styles.rateRow}>
             {[0.75, 1.0, 1.25, 1.5].map((r) => (
               <TouchableOpacity
                 key={r}
-                style={[
-                  styles.rateBtn,
-                  s.speechRate === r && styles.rateBtnActive,
-                ]}
+                style={[styles.rateBtn, s.speechRate === r && styles.rateBtnActive]}
                 onPress={() => update({ speechRate: r })}
               >
-                <Text
-                  style={[
-                    styles.rateBtnText,
-                    s.speechRate === r && styles.rateBtnTextActive,
-                  ]}
-                >
+                <Text style={[styles.rateBtnText, s.speechRate === r && styles.rateBtnTextActive]}>
                   {r}x
                 </Text>
               </TouchableOpacity>
@@ -237,8 +114,6 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
-
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
@@ -257,8 +132,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f0f0f' },
   content: { paddingBottom: 40 },
@@ -274,6 +147,15 @@ const styles = StyleSheet.create({
   backBtn: { width: 80 },
   backBtnText: { color: '#ff5555', fontSize: 15 },
   title: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  infoBox: {
+    margin: 16,
+    padding: 14,
+    backgroundColor: '#1a2a1a',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2a4a2a',
+  },
+  infoText: { color: '#7aaa7a', fontSize: 13, lineHeight: 20 },
   section: { marginTop: 24, paddingHorizontal: 16 },
   sectionTitle: {
     color: '#888',
@@ -283,59 +165,16 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 8,
   },
-  sectionBody: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
+  sectionBody: { backgroundColor: '#1a1a1a', borderRadius: 12, overflow: 'hidden' },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#2a2a2a',
   },
   rowLabel: { color: '#ddd', fontSize: 15 },
-  hint: { color: '#666', fontSize: 12, marginBottom: 8, paddingHorizontal: 4 },
-  label: { color: '#888', fontSize: 13, marginTop: 12, marginBottom: 6, paddingHorizontal: 4 },
-  input: {
-    backgroundColor: '#252525',
-    color: '#fff',
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-    fontFamily: 'monospace',
-    marginHorizontal: 4,
-    marginBottom: 4,
-  },
-  radioRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#2a2a2a',
-  },
-  radioRowActive: { backgroundColor: '#1f2a1f' },
-  radio: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: '#555',
-  },
-  radioSelected: { borderColor: '#ff0000', backgroundColor: '#ff0000' },
-  radioLabel: { color: '#ddd', fontSize: 14, flex: 1 },
-  radioHint: { color: '#666', fontSize: 12, marginTop: 2 },
-  rateRow: {
-    flexDirection: 'row',
-    gap: 10,
-    padding: 12,
-  },
+  rateRow: { flexDirection: 'row', gap: 10, padding: 12 },
   rateBtn: {
     flex: 1,
     paddingVertical: 10,

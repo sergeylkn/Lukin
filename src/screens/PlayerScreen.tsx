@@ -1,9 +1,10 @@
 /**
  * PlayerScreen — companion YouTube translator.
  *
- * The user watches YouTube in the native YouTube app while this screen:
- *  1. Accepts a YouTube URL
- *  2. Fetches + pre-translates all captions
+ * Fully free: captions + Russian translation both fetched from YouTube (no API keys).
+ *
+ *  1. User pastes YouTube URL
+ *  2. App fetches subtitles + Russian translation in one step (YouTube tlang=ru)
  *  3. On "Старт" — plays back translated audio in sync with video timestamps
  */
 
@@ -28,7 +29,6 @@ import {
   fetchTranscript,
   CaptionSegment,
 } from '../services/YouTubeTranscriptService';
-import { translateSegments } from '../services/TranslationService';
 import { AudioQueue } from '../services/AudioQueue';
 import {
   loadSettings,
@@ -36,56 +36,37 @@ import {
   settingsToTTSConfig,
 } from '../services/SettingsService';
 
-type Stage =
-  | 'idle'           // waiting for URL input
-  | 'loading'        // fetching captions
-  | 'translating'    // translating segments
-  | 'ready'          // ready to start playback
-  | 'playing'        // playing back translation
-  | 'paused'         // paused
-  | 'done';          // finished
+type Stage = 'idle' | 'loading' | 'ready' | 'playing' | 'paused' | 'done';
 
 export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void }) {
   const insets = useSafeAreaInsets();
 
   const [urlInput, setUrlInput] = useState('');
   const [stage, setStage] = useState<Stage>('idle');
-  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [segments, setSegments] = useState<CaptionSegment[]>([]);
   const [currentIdx, setCurrentIdx] = useState(-1);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [elapsed, setElapsed] = useState(0); // seconds since START pressed
+  const [elapsed, setElapsed] = useState(0);
 
   const audioQueueRef = useRef<AudioQueue | null>(null);
   const startTimeRef = useRef<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scheduledRef = useRef<Set<number>>(new Set());
 
-  // Load settings on mount
   useEffect(() => {
-    (async () => {
-      const s = await loadSettings();
+    loadSettings().then((s) => {
       setSettings(s);
       audioQueueRef.current = new AudioQueue(settingsToTTSConfig(s));
-    })();
+    });
     return () => stopPlayback();
   }, []);
-
-  // ── Paste URL ──────────────────────────────────────────────────────────────
 
   const handlePaste = async () => {
     const text = await Clipboard.getStringAsync();
     if (text) setUrlInput(text);
   };
 
-  // ── Load & translate ───────────────────────────────────────────────────────
-
   const handleLoad = useCallback(async () => {
-    if (!settings?.anthropicApiKey) {
-      Alert.alert('Нет API ключа', 'Укажи Claude API ключ в Настройках');
-      return;
-    }
-
     const videoId = parseVideoId(urlInput);
     if (!videoId) {
       Alert.alert('Неверная ссылка', 'Вставь ссылку на YouTube видео');
@@ -94,30 +75,17 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
 
     try {
       setStage('loading');
-      setProgress({ done: 0, total: 0 });
       setSegments([]);
       setCurrentIdx(-1);
 
-      const rawSegments = await fetchTranscript(videoId);
-
-      setStage('translating');
-      setProgress({ done: 0, total: rawSegments.length });
-
-      const translated = await translateSegments(
-        rawSegments,
-        settings.anthropicApiKey,
-        (done, total) => setProgress({ done, total }),
-      );
-
-      setSegments(translated);
+      const loaded = await fetchTranscript(videoId);
+      setSegments(loaded);
       setStage('ready');
     } catch (err: any) {
       setStage('idle');
       Alert.alert('Ошибка', err?.message ?? 'Не удалось загрузить субтитры');
     }
-  }, [urlInput, settings]);
-
-  // ── Playback ───────────────────────────────────────────────────────────────
+  }, [urlInput]);
 
   const stopPlayback = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -128,7 +96,6 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
 
   const startPlayback = useCallback(() => {
     if (!segments.length) return;
-
     stopPlayback();
     startTimeRef.current = Date.now();
     scheduledRef.current = new Set();
@@ -136,7 +103,6 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
     setElapsed(0);
     setStage('playing');
 
-    // Tick every 100ms — schedule segments when their time arrives
     timerRef.current = setInterval(() => {
       const elapsedSec = (Date.now() - startTimeRef.current) / 1000;
       setElapsed(elapsedSec);
@@ -153,7 +119,6 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
         }
       }
 
-      // Done when past the last segment
       const last = segments[segments.length - 1];
       if (elapsedSec > last.start + last.dur + 1) {
         if (timerRef.current) clearInterval(timerRef.current);
@@ -168,7 +133,6 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
   };
 
   const handleResume = () => {
-    // Shift start time to account for pause
     startTimeRef.current = Date.now() - elapsed * 1000;
     setStage('playing');
 
@@ -209,11 +173,7 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
     if (videoId) Linking.openURL(`https://www.youtube.com/watch?v=${videoId}`);
   };
 
-  // ── Render helpers ─────────────────────────────────────────────────────────
-
   const currentSeg = currentIdx >= 0 ? segments[currentIdx] : null;
-  const progressPct =
-    progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
 
   const formatTime = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -254,7 +214,7 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
 
           {(stage === 'idle' || stage === 'done') && (
             <TouchableOpacity
-              style={[styles.btn, styles.btnPrimary]}
+              style={[styles.btn, styles.btnPrimary, !urlInput.trim() && styles.btnDisabled]}
               onPress={handleLoad}
               disabled={!urlInput.trim()}
             >
@@ -267,42 +227,28 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
         {stage === 'loading' && (
           <View style={styles.card}>
             <ActivityIndicator size="large" color="#ff0000" />
-            <Text style={styles.statusText}>Загружаем субтитры...</Text>
+            <Text style={styles.statusText}>Загружаем субтитры и перевод...</Text>
+            <Text style={styles.statusHint}>Перевод бесплатный — через YouTube</Text>
           </View>
         )}
 
-        {/* Translating */}
-        {stage === 'translating' && (
-          <View style={styles.card}>
-            <ActivityIndicator size="large" color="#ff0000" />
-            <Text style={styles.statusText}>
-              Переводим... {progress.done}/{progress.total} ({progressPct}%)
-            </Text>
-            <View style={styles.progressBar}>
-              <View style={[styles.progressFill, { width: `${progressPct}%` }]} />
-            </View>
-          </View>
-        )}
-
-        {/* Ready */}
+        {/* Ready / Playing / Paused / Done */}
         {(stage === 'ready' || stage === 'paused' || stage === 'playing' || stage === 'done') && (
           <View style={styles.card}>
-            <Text style={styles.readyTitle}>
-              ✅ Переведено {segments.length} фраз
-            </Text>
+            <Text style={styles.readyTitle}>✅ Переведено {segments.length} фраз</Text>
 
             {stage === 'ready' && (
               <>
                 <Text style={styles.instructions}>
                   1. Нажми «Открыть в YouTube» ниже{'\n'}
-                  2. Запусти видео с начала{'\n'}
+                  2. Запусти видео с самого начала{'\n'}
                   3. Сразу нажми «СТАРТ» здесь
                 </Text>
                 <TouchableOpacity style={[styles.btn, styles.btnYt]} onPress={handleOpenYouTube}>
                   <Text style={styles.btnText}>▶ Открыть в YouTube</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.btn, styles.btnGreen]} onPress={startPlayback}>
-                  <Text style={styles.btnText}>🎙️ СТАРТ (запускай одновременно с видео)</Text>
+                  <Text style={styles.btnText}>🎙️ СТАРТ</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -349,7 +295,7 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
         )}
 
         {/* Transcript preview */}
-        {segments.length > 0 && stage !== 'loading' && stage !== 'translating' && (
+        {segments.length > 0 && (stage === 'ready' || stage === 'playing' || stage === 'paused' || stage === 'done') && (
           <View style={styles.card}>
             <Text style={styles.label}>Первые фразы перевода:</Text>
             {segments.slice(0, 5).map((seg, i) => (
@@ -369,8 +315,6 @@ export function PlayerScreen({ onOpenSettings }: { onOpenSettings: () => void })
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f0f0f' },
   header: {
@@ -387,12 +331,7 @@ const styles = StyleSheet.create({
   settingsBtn: { padding: 8 },
   settingsBtnText: { fontSize: 22 },
   scroll: { padding: 16, gap: 16, paddingBottom: 60 },
-  card: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    padding: 16,
-    gap: 12,
-  },
+  card: { backgroundColor: '#1a1a1a', borderRadius: 12, padding: 16, gap: 12 },
   label: { color: '#888', fontSize: 13, fontWeight: '600', letterSpacing: 0.5 },
   inputRow: { flexDirection: 'row', gap: 8 },
   input: {
@@ -412,30 +351,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pasteBtnText: { color: '#ccc', fontSize: 13 },
-  btn: {
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
+  btn: { borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
   btnPrimary: { backgroundColor: '#cc0000' },
   btnGreen: { backgroundColor: '#1a7a1a' },
   btnYt: { backgroundColor: '#1a1a7a' },
   btnOrange: { backgroundColor: '#7a4a00' },
-  btnGhost: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: '#444',
-  },
+  btnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#444' },
+  btnDisabled: { opacity: 0.4 },
   btnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   btnTextGhost: { color: '#888', fontSize: 14 },
   statusText: { color: '#aaa', textAlign: 'center', fontSize: 14 },
-  progressBar: {
-    height: 6,
-    backgroundColor: '#333',
-    borderRadius: 3,
-    overflow: 'hidden',
-  },
-  progressFill: { height: '100%', backgroundColor: '#cc0000' },
+  statusHint: { color: '#555', textAlign: 'center', fontSize: 12 },
   readyTitle: { color: '#4caf50', fontSize: 15, fontWeight: '700' },
   instructions: {
     color: '#bbb',
@@ -452,12 +378,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontVariant: ['tabular-nums'],
   },
-  currentSegBox: {
-    backgroundColor: '#252525',
-    borderRadius: 8,
-    padding: 12,
-    gap: 6,
-  },
+  currentSegBox: { backgroundColor: '#252525', borderRadius: 8, padding: 12, gap: 6 },
   originalText: { color: '#888', fontSize: 13 },
   translatedText: { color: '#fff', fontSize: 18, fontWeight: '500', lineHeight: 26 },
   segRow: {
