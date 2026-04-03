@@ -31,11 +31,11 @@ jobs:
         run: |
           echo "sdk.dir=/opt/android/sdk" > android/local.properties
 
-      - name: Build debug APK
+      - name: Build release APK (JS bundle embedded, no Metro needed)
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug \
+          ./gradlew assembleRelease \
             -PactiveArchitectures=arm64-v8a \
             --no-daemon 2>&1
 
@@ -43,7 +43,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: youtube-ru-translator
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/release/*.apk
           retention-days: 30
 
       - name: Publish GitHub Release
@@ -54,5 +54,5 @@ jobs:
           body: |
             Автоматическая сборка APK.
             Установи на Android телефон (может потребоваться разрешить установку из неизвестных источников).
-          files: android/app/build/outputs/apk/debug/*.apk
+          files: android/app/build/outputs/apk/release/*.apk
           make_latest: true
