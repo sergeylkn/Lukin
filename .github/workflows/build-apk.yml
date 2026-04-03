@@ -1,0 +1,58 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "claude/youtube-video-translator-LvU39", "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Official React Native Android image — has SDK 34, NDK 26, CMake, Java 17
+    container:
+      image: reactnativecommunity/react-native-android:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install JS dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Write local.properties
+        run: |
+          echo "sdk.dir=/opt/android/sdk" > android/local.properties
+
+      - name: Build release APK (JS bundle embedded, no Metro needed)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease \
+            -PactiveArchitectures=arm64-v8a \
+            --no-daemon 2>&1
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-ru-translator
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.sha }}
+          name: "YouTube RU Translator APK"
+          body: |
+            Автоматическая сборка APK.
+            Установи на Android телефон (может потребоваться разрешить установку из неизвестных источников).
+          files: android/app/build/outputs/apk/release/*.apk
+          make_latest: true
