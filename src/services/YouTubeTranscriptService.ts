@@ -1,25 +1,21 @@
 /**
  * YouTubeTranscriptService
  *
- * Uses YouTube's internal InnerTube API (youtubei/v1/player) to get
- * caption tracks. This is more reliable from Android than HTML scraping,
- * which YouTube blocks with bot detection.
- *
- * Translation is free via YouTube's tlang=ru parameter on the timedtext API.
+ * Uses YouTube's InnerTube API to get caption tracks.
+ * Tries multiple clients in order of reliability.
+ * Translation via YouTube's tlang=ru (free, Google Translate built-in).
  */
 
 export interface CaptionSegment {
-  start: number;       // seconds from video start
-  dur: number;         // duration in seconds
-  text: string;        // original text
-  translation?: string; // Russian (from YouTube tlang=ru, free)
+  start: number;
+  dur: number;
+  text: string;
+  translation?: string;
 }
 
 export function parseVideoId(input: string): string | null {
   const trimmed = input.trim();
-
   if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) return trimmed;
-
   try {
     const url = new URL(trimmed);
     if (url.hostname === 'youtu.be') return url.pathname.slice(1).split('/')[0];
@@ -28,7 +24,6 @@ export function parseVideoId(input: string): string | null {
     const shorts = url.pathname.match(/\/shorts\/([a-zA-Z0-9_-]{11})/);
     if (shorts) return shorts[1];
   } catch (_) {}
-
   const match = trimmed.match(/(?:v=|\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
   return match ? match[1] : null;
 }
@@ -50,59 +45,61 @@ interface CaptionTrack {
   kind?: string;
 }
 
-/**
- * Fetch player data via YouTube InnerTube API.
- * This works reliably from Android (no bot detection, returns JSON directly).
- */
+// InnerTube clients in order of preference
+// Each has different bot detection behaviour; IOS/TVHTML5 bypass most restrictions
+const INNERTUBE_CLIENTS = [
+  // IOS client — no API key needed, minimal bot detection
+  {
+    name: 'IOS',
+    url: 'https://www.youtube.com/youtubei/v1/player',
+    context: { clientName: 'IOS', clientVersion: '19.09.3', deviceModel: 'iPhone14,3', osName: 'iPhone', osVersion: '16.1.0' },
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 16_1 like Mac OS X)',
+      'X-YouTube-Client-Name': '5',
+      'X-YouTube-Client-Version': '19.09.3',
+    },
+  },
+  // WEB client with public API key
+  {
+    name: 'WEB',
+    url: 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+    context: { clientName: 'WEB', clientVersion: '2.20240101.00.00', hl: 'en', gl: 'US' },
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'X-YouTube-Client-Name': '1',
+      'X-YouTube-Client-Version': '2.20240101.00.00',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Origin': 'https://www.youtube.com',
+    },
+  },
+  // TVHTML5 embedded — very permissive, often bypasses geo/age restrictions
+  {
+    name: 'TV',
+    url: 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+    context: { clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER', clientVersion: '2.0', clientScreen: 'EMBED' },
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1',
+      'X-YouTube-Client-Name': '85',
+    },
+  },
+];
+
 async function fetchPlayerData(videoId: string): Promise<CaptionTrack[]> {
-  // Try Web client first, fall back to Android client
-  const clients = [
-    {
-      clientName: 'WEB',
-      clientVersion: '2.20240101.00.00',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'X-YouTube-Client-Name': '1',
-        'X-YouTube-Client-Version': '2.20240101.00.00',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-    },
-    {
-      clientName: 'ANDROID',
-      clientVersion: '18.11.34',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'com.google.android.youtube/18.11.34 (Linux; U; Android 11) gzip',
-        'X-YouTube-Client-Name': '3',
-        'X-YouTube-Client-Version': '18.11.34',
-      },
-    },
-  ];
+  let lastError: Error = new Error('Не удалось получить данные видео');
 
-  let lastError: Error | null = null;
-
-  for (const client of clients) {
+  for (const client of INNERTUBE_CLIENTS) {
     try {
-      const body = JSON.stringify({
-        videoId,
-        context: {
-          client: {
-            clientName: client.clientName,
-            clientVersion: client.clientVersion,
-            hl: 'en',
-            gl: 'US',
-          },
-        },
+      const res = await fetch(client.url, {
+        method: 'POST',
+        headers: client.headers as any,
+        body: JSON.stringify({ videoId, context: { client: client.context } }),
       });
 
-      const res = await fetch(
-        'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false',
-        { method: 'POST', headers: client.headers as any, body },
-      );
-
       if (!res.ok) {
-        lastError = new Error(`InnerTube ${client.clientName} returned ${res.status}`);
+        lastError = new Error(`InnerTube ${client.name} вернул ${res.status}`);
         continue;
       }
 
@@ -110,31 +107,34 @@ async function fetchPlayerData(videoId: string): Promise<CaptionTrack[]> {
       const tracks: any[] =
         data?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
 
-      if (tracks.length === 0) {
-        lastError = new Error('no_captions');
-        continue;
+      if (tracks.length > 0) {
+        return tracks.map((t: any) => ({
+          baseUrl: t.baseUrl as string,
+          languageCode: (t.languageCode as string) ?? '',
+          kind: t.kind,
+        }));
       }
 
-      return tracks.map((t: any) => ({
-        baseUrl: t.baseUrl as string,
-        languageCode: (t.languageCode as string) ?? '',
-        kind: t.kind,
-      }));
+      // Video exists but has no captions — don't try other clients
+      const title = data?.videoDetails?.title;
+      if (title) {
+        throw new Error(
+          `Видео "${title}" не имеет субтитров. Попробуй другое видео с авто-субтитрами.`,
+        );
+      }
+
+      // Bot-detected / unexpected response — try next client
+      lastError = new Error(`${client.name}: нет субтитров в ответе`);
     } catch (e: any) {
+      if (e.message?.includes('Видео') && e.message?.includes('субтитров')) throw e;
       lastError = e;
     }
   }
 
-  if (lastError?.message === 'no_captions') {
-    throw new Error(
-      'У этого видео нет субтитров. Попробуй видео с авто-субтитрами (большинство англоязычных видео).',
-    );
-  }
-  throw lastError ?? new Error('Не удалось получить данные видео');
+  throw lastError;
 }
 
-function pickBestTrack(tracks: CaptionTrack[]): CaptionTrack | null {
-  if (!tracks.length) return null;
+function pickBestTrack(tracks: CaptionTrack[]): CaptionTrack {
   return (
     tracks.find((t) => t.languageCode === 'en' && t.kind === 'asr') ??
     tracks.find((t) => t.languageCode === 'en') ??
@@ -155,26 +155,18 @@ function parseXml(xml: string): { start: number; dur: number; text: string }[] {
 }
 
 async function fetchXml(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: { 'Accept-Language': 'en-US,en;q=0.9' },
-  });
+  const res = await fetch(url, { headers: { 'Accept-Language': 'en-US,en;q=0.9' } });
   if (!res.ok) throw new Error(`Caption fetch returned ${res.status}`);
   return res.text();
 }
 
-/** Main entry: fetch captions + Russian translation (both from YouTube, both free) */
 export async function fetchTranscript(videoId: string): Promise<CaptionSegment[]> {
   const tracks = await fetchPlayerData(videoId);
   const track = pickBestTrack(tracks);
 
-  if (!track) {
-    throw new Error(
-      'У этого видео нет субтитров. Попробуй видео с авто-субтитрами.',
-    );
-  }
-
-  // Strip any existing fmt/tlang params from baseUrl before adding ours
-  const cleanBase = track.baseUrl.replace(/&fmt=[^&]*/g, '').replace(/&tlang=[^&]*/g, '');
+  const cleanBase = track.baseUrl
+    .replace(/&fmt=[^&]*/g, '')
+    .replace(/&tlang=[^&]*/g, '');
 
   const [origXml, ruXml] = await Promise.all([
     fetchXml(cleanBase + '&fmt=xml'),
