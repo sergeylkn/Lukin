@@ -1,89 +1,70 @@
 package com.ytrutranslator.app
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
 
 /**
- * Accessibility service that watches for YouTube video URLs in:
- *  - Chrome, Firefox, Brave, Edge and other browsers (reads address bar)
- *  - YouTube app (reads video URL from content / window state)
+ * Минимальный Accessibility Service для обнаружения YouTube видео.
  *
- * When a new video ID is detected, it broadcasts ACTION_VIDEO_DETECTED
- * to FloatingTranslatorService.
+ * Принципы безопасности:
+ * - canRetrieveWindowContent = false → НЕ читает экран
+ * - Слушает ТОЛЬКО typeViewTextChanged (изменение текста в поле)
+ * - Обрабатывает только строго проверенные YouTube URL
+ * - Не хранит никаких данных кроме последнего video ID
+ * - Весь прочий текст (пароли, сообщения, etc.) игнорируется
+ *   сразу после проверки regex — не передаётся никуда
+ *
+ * Как работает: когда пользователь переходит на youtube.com/watch?v=XXX
+ * в Chrome/Firefox/др., браузер генерирует TYPE_VIEW_TEXT_CHANGED
+ * с новым URL в поле адресной строки. Мы читаем ТОЛЬКО этот текст,
+ * проверяем regex, и если это YouTube видео — отправляем video ID
+ * нашему FloatingTranslatorService.
  */
 class YouTubeDetectorService : AccessibilityService() {
 
+    // Строгий regex: только youtube.com/watch?v=ID или youtu.be/ID
+    private val YT_VIDEO_RE = Regex(
+        """(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?(?:[^&\s]*&)*v=|youtu\.be/)([a-zA-Z0-9_-]{11})(?:[&?\s]|${'$'})"""
+    )
+
     private var lastVideoId: String? = null
 
+    override fun onServiceConnected() {
+        // Дополнительно ограничиваем флаги программно
+        serviceInfo = serviceInfo?.apply {
+            flags = AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS.inv() and flags
+        }
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        event ?: return
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> scanForVideo(event)
-            else -> {}
+        // Принимаем ТОЛЬКО события изменения текста
+        if (event?.eventType != AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) return
+
+        // Читаем только тот текст, что пришёл в событии — ничего больше
+        val texts = event.text ?: return
+        for (text in texts) {
+            val str = text?.toString() ?: continue
+            // Игнорируем слишком короткие строки (не URL) и слишком длинные (не адресная строка)
+            if (str.length < 20 || str.length > 500) continue
+            // Проверяем строго по YouTube-паттерну
+            val videoId = YT_VIDEO_RE.find(str)?.groupValues?.get(1) ?: continue
+            if (videoId.length == 11) {
+                dispatchVideo(videoId)
+                return
+            }
         }
     }
 
     override fun onInterrupt() {}
 
-    // ── Scan ──────────────────────────────────────────────────────────────────
-    private fun scanForVideo(event: AccessibilityEvent) {
-        // Fast path: check event text directly (URL bar change)
-        event.text?.forEach { text ->
-            val id = extractVideoId(text?.toString())
-            if (id != null) { notify(id); return }
-        }
-
-        // Slower path: walk window tree (needed for YouTube app)
-        val root = rootInActiveWindow ?: return
-        val id = walkTree(root)
-        root.recycle()
-        if (id != null) notify(id)
-    }
-
-    private fun walkTree(node: AccessibilityNodeInfo): String? {
-        // Check this node's text / description
-        val id = extractVideoId(node.text?.toString())
-            ?: extractVideoId(node.contentDescription?.toString())
-        if (id != null) return id
-
-        // Check URL in EditText (Chrome address bar)
-        if (node.className?.contains("EditText") == true) {
-            val id2 = extractVideoId(node.text?.toString())
-            if (id2 != null) return id2
-        }
-
-        // Recurse (limit depth to avoid ANR)
-        for (i in 0 until minOf(node.childCount, 30)) {
-            val child = node.getChild(i) ?: continue
-            val found = walkTree(child)
-            child.recycle()
-            if (found != null) return found
-        }
-        return null
-    }
-
-    // ── Video ID extraction ────────────────────────────────────────────────────
-    private val YT_PATTERN = Regex(
-        """(?:youtube\.com/watch\?(?:[^&]*&)*v=|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})"""
-    )
-
-    private fun extractVideoId(text: String?): String? {
-        text ?: return null
-        return YT_PATTERN.find(text)?.groupValues?.get(1)
-    }
-
-    // ── Broadcast ─────────────────────────────────────────────────────────────
-    private fun notify(videoId: String) {
+    private fun dispatchVideo(videoId: String) {
         if (videoId == lastVideoId) return
         lastVideoId = videoId
-
-        val intent = Intent(FloatingTranslatorService.ACTION_VIDEO_DETECTED).apply {
+        sendBroadcast(Intent(FloatingTranslatorService.ACTION_VIDEO_DETECTED).apply {
             setPackage(packageName)
             putExtra(FloatingTranslatorService.EXTRA_VIDEO_ID, videoId)
-        }
-        sendBroadcast(intent)
+        })
     }
 }

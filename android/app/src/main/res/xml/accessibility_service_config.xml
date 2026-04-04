@@ -1,10 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  МИНИМАЛЬНАЯ конфигурация Accessibility Service.
+
+  Что делает:
+  - Слушает ТОЛЬКО typeViewTextChanged — срабатывает когда меняется
+    текст в конкретном поле (адресная строка браузера при навигации).
+  - НЕ читает содержимое экрана (canRetrieveWindowContent="false").
+  - НЕ получает нажатия клавиш.
+  - Ограничен строго перечисленными браузерами.
+
+  Реагирует только если изменённый текст содержит
+  youtube.com/watch?v= или youtu.be/ — иначе игнорирует.
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityEventTypes="typeViewTextChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRequestEnhancedWebAccessibility"
-    android:canRetrieveWindowContent="true"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
+    android:canRequestFilterKeyEvents="false"
+    android:canRequestTouchExplorationMode="false"
     android:description="@string/accessibility_service_description"
-    android:notificationTimeout="200"
-    android:packageNames="com.android.chrome,com.chrome.beta,com.chrome.dev,org.mozilla.firefox,com.microsoft.emmx,com.brave.browser,com.opera.browser,com.google.android.youtube"
+    android:notificationTimeout="300"
+    android:packageNames="com.android.chrome,com.chrome.beta,com.chrome.dev,com.chrome.canary,org.mozilla.firefox,org.mozilla.firefox_beta,com.microsoft.emmx,com.brave.browser,com.opera.browser,com.sec.android.app.sbrowser"
     android:settingsActivity=".MainActivity"/>

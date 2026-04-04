@@ -1,11 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+  <!-- Только минимально необходимые разрешения -->
   <uses-permission android:name="android.permission.INTERNET"/>
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
-  <uses-permission android:name="android.permission.VIBRATE"/>
-  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
@@ -13,16 +13,18 @@
       <data android:scheme="https"/>
     </intent>
   </queries>
+
   <application
       android:name=".MainApplication"
       android:label="@string/app_name"
       android:icon="@mipmap/ic_launcher"
       android:roundIcon="@mipmap/ic_launcher_round"
-      android:allowBackup="true"
+      android:allowBackup="false"
       android:theme="@style/AppTheme"
       android:supportsRtl="true"
       android:fullBackupContent="@xml/secure_store_backup_rules"
-      android:dataExtractionRules="@xml/secure_store_data_extraction_rules">
+      android:dataExtractionRules="@xml/secure_store_data_extraction_rules"
+      android:networkSecurityConfig="@xml/network_security_config">
 
     <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
@@ -49,20 +51,18 @@
       </intent-filter>
     </activity>
 
-    <!-- Share receiver: intercepts YouTube links shared from YouTube app / browser -->
+    <!-- Перехват ссылки из кнопки «Поделиться» в YouTube -->
     <activity
         android:name=".ShareReceiverActivity"
         android:exported="true"
         android:theme="@android:style/Theme.NoDisplay"
         android:launchMode="singleTask"
         android:noHistory="true">
-      <!-- Handle: Share from YouTube app (ACTION_SEND with URL text) -->
       <intent-filter>
         <action android:name="android.intent.action.SEND"/>
         <category android:name="android.intent.category.DEFAULT"/>
         <data android:mimeType="text/plain"/>
       </intent-filter>
-      <!-- Handle: Direct YouTube URL intent (ACTION_VIEW) -->
       <intent-filter>
         <action android:name="android.intent.action.VIEW"/>
         <category android:name="android.intent.category.DEFAULT"/>
@@ -77,17 +77,17 @@
       </intent-filter>
     </activity>
 
-    <!-- Floating overlay service -->
+    <!-- Плавающий оверлей -->
     <service
         android:name=".FloatingTranslatorService"
         android:exported="false"
         android:foregroundServiceType="mediaPlayback"/>
 
-    <!-- Accessibility service: auto-detects YouTube URLs in browsers and YouTube app -->
+    <!-- Accessibility: реагирует ТОЛЬКО на изменение текста в адресной строке браузера -->
     <service
         android:name=".YouTubeDetectorService"
         android:exported="true"
-        android:label="YouTube Переводчик — автодетект"
+        android:label="@string/accessibility_service_label"
         android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
       <intent-filter>
         <action android:name="android.accessibilityservice.AccessibilityService"/>

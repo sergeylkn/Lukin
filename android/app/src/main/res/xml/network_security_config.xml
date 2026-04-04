@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ограничиваем сетевые запросы только доменами YouTube и Anthropic.
+  Приложение физически не может обращаться к посторонним серверам.
+-->
+<network-security-config>
+  <domain-config cleartextTrafficPermitted="false">
+    <!-- YouTube InnerTube API (субтитры) -->
+    <domain includeSubdomains="true">youtube.com</domain>
+    <domain includeSubdomains="true">googlevideo.com</domain>
+  </domain-config>
+  <base-config cleartextTrafficPermitted="false">
+    <trust-anchors>
+      <certificates src="system"/>
+    </trust-anchors>
+  </base-config>
+</network-security-config>

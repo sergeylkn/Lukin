@@ -1,6 +1,7 @@
 <resources>
   <string name="app_name">YouTube Переводчик</string>
-  <string name="accessibility_service_description">Автоматически определяет YouTube видео в браузере и приложении YouTube для перевода</string>
+  <string name="accessibility_service_label">YouTube Переводчик — детект URL</string>
+  <string name="accessibility_service_description">Читает только адресную строку браузера. Реагирует исключительно на youtube.com/watch и youtu.be ссылки. Не читает содержимое страниц, пароли или личные данные.</string>
   <string name="expo_splash_screen_resize_mode" translatable="false">contain</string>
   <string name="expo_splash_screen_status_bar_translucent" translatable="false">false</string>
 </resources>
