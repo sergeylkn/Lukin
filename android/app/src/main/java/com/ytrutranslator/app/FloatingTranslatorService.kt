@@ -285,27 +285,48 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
 
     // ── Subtitle fetching (runs on executor thread) ────────────────────────────
     private fun fetchSubtitles(videoId: String): List<Segment> {
+        // 1. Try InnerTube (multiple clients)
         val tracks = fetchCaptionTracks(videoId)
-        val track = tracks.firstOrNull { it.second == "en" }
-            ?: tracks.firstOrNull { it.second.startsWith("en") }
-            ?: tracks.firstOrNull()
-            ?: throw Exception("Нет субтитров у этого видео")
+        if (tracks.isNotEmpty()) {
+            val track = tracks.firstOrNull { it.second == "en" }
+                ?: tracks.firstOrNull { it.second.startsWith("en") }
+                ?: tracks.first()
+            val baseUrl = track.first
+                .replace(Regex("&fmt=[^&]*"), "")
+                .replace(Regex("&tlang=[^&]*"), "")
+            val xml = runCatching { httpGet("$baseUrl&fmt=xml&tlang=$language") }.getOrNull()
+            val segs = if (xml != null) parseXml(xml) else emptyList()
+            if (segs.isNotEmpty()) return segs
+        }
 
-        val baseUrl = track.first
-            .replace(Regex("&fmt=[^&]*"), "")
-            .replace(Regex("&tlang=[^&]*"), "")
+        // 2. Fallback: direct YouTube timedtext API (no InnerTube needed)
+        return fetchViaTimedtextApi(videoId)
+    }
 
-        val xml = httpGet("$baseUrl&fmt=xml&tlang=$language")
-        return parseXml(xml)
+    /** Direct timedtext API — works for most public videos with ASR or manual captions */
+    private fun fetchViaTimedtextApi(videoId: String): List<Segment> {
+        val variants = listOf(
+            // Auto-generated English → translated
+            "https://www.youtube.com/api/timedtext?v=$videoId&lang=en&fmt=xml&kind=asr&tlang=$language",
+            // Manual English captions → translated
+            "https://www.youtube.com/api/timedtext?v=$videoId&lang=en&fmt=xml&tlang=$language",
+            // Auto-generated, no translation (show original as last resort)
+            "https://www.youtube.com/api/timedtext?v=$videoId&lang=en&fmt=xml&kind=asr"
+        )
+        for (url in variants) {
+            val xml = runCatching { httpGet(url) }.getOrNull() ?: continue
+            val segs = parseXml(xml)
+            if (segs.isNotEmpty()) return segs
+        }
+        throw Exception("Субтитры недоступны для этого видео")
     }
 
     private fun fetchCaptionTracks(videoId: String): List<Pair<String, String>> {
-        // Try IOS client first (no API key, minimal bot detection)
-        val iosBody = buildInnerTubeBody(videoId, "IOS", "19.09.3")
+        // Client 1: IOS — no API key, low bot detection
         val iosResp = runCatching {
             httpPost(
                 "https://www.youtube.com/youtubei/v1/player",
-                iosBody,
+                buildInnerTubeBody(videoId, "IOS", "19.09.3"),
                 mapOf(
                     "Content-Type" to "application/json",
                     "User-Agent" to "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 16_1 like Mac OS X)",
@@ -314,16 +335,43 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
                 )
             )
         }.getOrNull()
+        parseTracks(iosResp).takeIf { it.isNotEmpty() }?.let { return it }
 
-        val tracks = parseTracks(iosResp)
-        if (tracks.isNotEmpty()) return tracks
+        // Client 2: TVHTML5 Embedded — bypasses many restrictions
+        val tvResp = runCatching {
+            httpPost(
+                "https://www.youtube.com/youtubei/v1/player",
+                """{"videoId":"$videoId","context":{"client":{"clientName":"TVHTML5_SIMPLY_EMBEDDED_PLAYER","clientVersion":"2.0","hl":"en","gl":"US"},"thirdParty":{"embedUrl":"https://www.youtube.com/"}}}""",
+                mapOf(
+                    "Content-Type" to "application/json",
+                    "User-Agent" to "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1",
+                    "X-YouTube-Client-Name" to "85",
+                    "X-YouTube-Client-Version" to "2.0"
+                )
+            )
+        }.getOrNull()
+        parseTracks(tvResp).takeIf { it.isNotEmpty() }?.let { return it }
 
-        // Fallback: WEB client
-        val webBody = buildInnerTubeBody(videoId, "WEB", "2.20240101.00.00")
+        // Client 3: MWEB — mobile web client
+        val mwebResp = runCatching {
+            httpPost(
+                "https://www.youtube.com/youtubei/v1/player",
+                buildInnerTubeBody(videoId, "MWEB", "2.20240101.07.00"),
+                mapOf(
+                    "Content-Type" to "application/json",
+                    "User-Agent" to "Mozilla/5.0 (iPhone; CPU iPhone OS 16_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Mobile/15E148 Safari/604.1",
+                    "X-YouTube-Client-Name" to "2",
+                    "X-YouTube-Client-Version" to "2.20240101.07.00"
+                )
+            )
+        }.getOrNull()
+        parseTracks(mwebResp).takeIf { it.isNotEmpty() }?.let { return it }
+
+        // Client 4: WEB fallback
         val webResp = runCatching {
             httpPost(
                 "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
-                webBody,
+                buildInnerTubeBody(videoId, "WEB", "2.20240101.00.00"),
                 mapOf(
                     "Content-Type" to "application/json",
                     "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -331,7 +379,6 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
                 )
             )
         }.getOrNull()
-
         return parseTracks(webResp)
     }
 
