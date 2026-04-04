@@ -222,7 +222,7 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         if (videoId == currentVideoId && isTranslating) return
         currentVideoId = videoId
         stopTranslation()
-        updateSubtitle("⏳ Загрузка субтитров...")
+        step("[$videoId] Запрос субтитров...")
         setDot(false)
 
         executor.execute {
@@ -230,17 +230,25 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
                 val segs = fetchSubtitles(videoId)
                 uiHandler.post {
                     if (segs.isEmpty()) {
-                        updateSubtitle("⚠ Нет субтитров у этого видео")
+                        step("⚠ Субтитры не найдены (${segs.size})")
                         return@post
                     }
                     schedulePlayback(segs)
                     setDot(true)
-                    updateSubtitle("▶ Синхронизируй с видео — нажми ▶")
+                    updateSubtitle("✓ ${segs.size} фраз — нажми ▶ когда начнёшь видео")
                 }
             } catch (e: Exception) {
-                uiHandler.post { updateSubtitle("⚠ ${e.message?.take(60)}") }
+                val msg = e.message ?: e.javaClass.simpleName
+                android.util.Log.e("YTTranslator", "fetchSubtitles failed", e)
+                uiHandler.post { updateSubtitle("⚠ $msg") }
             }
         }
+    }
+
+    /** Post a status message to subtitle view AND logcat simultaneously. */
+    private fun step(msg: String) {
+        android.util.Log.d("YTTranslator", msg)
+        updateSubtitle(msg)
     }
 
     // ── Playback scheduling ────────────────────────────────────────────────────
@@ -285,13 +293,17 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
 
     // ── Subtitle fetching (runs on executor thread) ────────────────────────────
     private fun fetchSubtitles(videoId: String): List<Segment> {
-        // 1. Parse mobile YouTube page as real Safari — most reliable, gets signed URLs
-        runCatching { fetchViaWebPage(videoId) }.getOrNull()
-            ?.takeIf { it.isNotEmpty() }?.let { return it }
+        // 1. Parse YouTube page as real browser (gets signed caption URLs)
+        step("1/3 Загружаю страницу YouTube...")
+        runCatching { fetchViaWebPage(videoId) }.onFailure {
+            android.util.Log.w("YTTranslator", "webPage failed: ${it.message}")
+        }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
 
-        // 2. InnerTube (4 clients)
+        // 2. InnerTube API (4 clients)
+        step("2/3 Пробую InnerTube API...")
         val tracks = fetchCaptionTracks(videoId)
         if (tracks.isNotEmpty()) {
+            android.util.Log.d("YTTranslator", "InnerTube: ${tracks.size} tracks: ${tracks.map { it.second }}")
             val track = tracks.firstOrNull { it.second == "en" }
                 ?: tracks.firstOrNull { it.second.startsWith("en") }
                 ?: tracks.first()
@@ -300,51 +312,86 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
                 .replace(Regex("&tlang=[^&]*"), "")
             runCatching { parseXml(httpGet("$baseUrl&fmt=xml&tlang=$language")) }
                 .getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
+        } else {
+            android.util.Log.w("YTTranslator", "InnerTube: no tracks returned")
         }
 
-        // 3. Direct timedtext API (last resort)
+        // 3. Direct timedtext API
+        step("3/3 Прямой timedtext API...")
         return fetchViaTimedtextApi(videoId)
     }
 
     /**
-     * Fetch mobile YouTube page as iPhone Safari, extract ytInitialPlayerResponse,
-     * and load subtitles from signed caption URLs inside it.
-     * This is the same approach used by yt-dlp and works without any API keys.
+     * Fetch YouTube page as iPhone Safari → extract ytInitialPlayerResponse →
+     * use signed caption URLs inside it. Works for all public videos.
      */
     private fun fetchViaWebPage(videoId: String): List<Segment> {
-        val html = httpGet(
-            "https://m.youtube.com/watch?v=$videoId",
-            mapOf(
-                "User-Agent" to "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language" to "en-US,en;q=0.9"
-            )
+        val iphoneUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) " +
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+        val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+        // Try mobile then desktop URL
+        val candidates = listOf(
+            "https://m.youtube.com/watch?v=$videoId&hl=en" to iphoneUA,
+            "https://www.youtube.com/watch?v=$videoId&hl=en" to desktopUA
         )
 
-        val marker = "ytInitialPlayerResponse = "
-        val markerIdx = html.indexOf(marker)
-        if (markerIdx == -1) return emptyList()
+        for ((url, ua) in candidates) {
+            val html = runCatching {
+                httpGet(url, mapOf(
+                    "User-Agent" to ua,
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language" to "en-US,en;q=0.9"
+                ))
+            }.getOrNull() ?: continue
 
-        val jsonStart = markerIdx + marker.length
-        val json = extractJsonObject(html, jsonStart)
-        if (json.isEmpty()) return emptyList()
+            android.util.Log.d("YTTranslator", "webPage($url): got ${html.length} chars")
 
-        val tracks = parseTracks(json)
-        if (tracks.isEmpty()) return emptyList()
+            // Search for player response — both with and without "var" keyword
+            val json = findPlayerResponseJson(html) ?: continue
 
-        val track = tracks.firstOrNull { it.second == "en" }
-            ?: tracks.firstOrNull { it.second.startsWith("en") }
-            ?: tracks.first()
+            android.util.Log.d("YTTranslator", "playerResponse JSON: ${json.take(120)}")
 
-        val baseUrl = track.first
-            .replace(Regex("&fmt=[^&]*"), "")
-            .replace(Regex("&tlang=[^&]*"), "")
+            val tracks = parseTracks(json)
+            android.util.Log.d("YTTranslator", "tracks from page: ${tracks.size} → ${tracks.map { it.second }}")
+            if (tracks.isEmpty()) continue
 
-        val xml = httpGet("$baseUrl&fmt=xml&tlang=$language")
-        return parseXml(xml)
+            val track = tracks.firstOrNull { it.second == "en" }
+                ?: tracks.firstOrNull { it.second.startsWith("en") }
+                ?: tracks.first()
+
+            val baseUrl = track.first
+                .replace(Regex("&fmt=[^&]*"), "")
+                .replace(Regex("&tlang=[^&]*"), "")
+
+            val xml = httpGet("$baseUrl&fmt=xml&tlang=$language")
+            android.util.Log.d("YTTranslator", "timedtext XML: ${xml.take(120)}")
+            val segs = parseXml(xml)
+            if (segs.isNotEmpty()) return segs
+        }
+        return emptyList()
     }
 
-    /** Extract a balanced JSON object starting at [start] position in [html]. */
+    /** Find ytInitialPlayerResponse JSON in page HTML, handling both assignment forms. */
+    private fun findPlayerResponseJson(html: String): String? {
+        val markers = listOf(
+            "ytInitialPlayerResponse = ",
+            "var ytInitialPlayerResponse = ",
+            "ytInitialPlayerResponse="
+        )
+        for (marker in markers) {
+            val idx = html.indexOf(marker)
+            if (idx == -1) continue
+            val jsonStart = idx + marker.length
+            if (jsonStart >= html.length || html[jsonStart] != '{') continue
+            val json = extractJsonObject(html, jsonStart)
+            if (json.length > 100) return json  // sanity check
+        }
+        return null
+    }
+
+    /** Extract a balanced JSON object starting at [start] (must point at '{'}). */
     private fun extractJsonObject(html: String, start: Int): String {
         var depth = 0
         var inStr = false
@@ -353,10 +400,10 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         while (i < html.length) {
             val c = html[i]
             when {
-                escape           -> escape = false
-                c == '\\'&& inStr -> escape = true
-                c == '"'         -> inStr = !inStr
-                !inStr && c == '{' -> { depth++; if (depth == 1 && i > start) { /* skip */ } }
+                escape            -> escape = false
+                c == '\\' && inStr -> escape = true
+                c == '"'          -> inStr = !inStr
+                !inStr && c == '{' -> depth++
                 !inStr && c == '}' -> { depth--; if (depth == 0) return html.substring(start, i + 1) }
             }
             i++
@@ -364,7 +411,7 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         return ""
     }
 
-    /** Direct timedtext API — fallback when page scraping and InnerTube both fail */
+    /** Direct timedtext API — last resort */
     private fun fetchViaTimedtextApi(videoId: String): List<Segment> {
         val variants = listOf(
             "https://www.youtube.com/api/timedtext?v=$videoId&lang=en&fmt=xml&kind=asr&tlang=$language",
@@ -373,10 +420,11 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         )
         for (url in variants) {
             val xml = runCatching { httpGet(url) }.getOrNull() ?: continue
+            android.util.Log.d("YTTranslator", "timedtext direct: ${xml.take(80)}")
             val segs = parseXml(xml)
             if (segs.isNotEmpty()) return segs
         }
-        throw Exception("Субтитры недоступны для этого видео")
+        throw Exception("Субтитры недоступны (все методы исчерпаны)")
     }
 
     private fun fetchCaptionTracks(videoId: String): List<Pair<String, String>> {

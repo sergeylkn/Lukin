@@ -65,4 +65,19 @@ class OverlayModule(private val ctx: ReactApplicationContext) :
         )?.contains(ctx.packageName) ?: false
         promise.resolve(enabled)
     }
+
+    /** Send a video ID directly to the running overlay service (for testing). */
+    @ReactMethod
+    fun testVideoId(videoId: String, promise: Promise) {
+        if (videoId.length != 11) {
+            promise.reject("INVALID", "Video ID must be 11 characters")
+            return
+        }
+        val intent = Intent(FloatingTranslatorService.ACTION_VIDEO_DETECTED).apply {
+            putExtra(FloatingTranslatorService.EXTRA_VIDEO_ID, videoId)
+            setPackage(ctx.packageName)
+        }
+        ctx.sendBroadcast(intent)
+        promise.resolve(true)
+    }
 }

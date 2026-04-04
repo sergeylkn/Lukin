@@ -7,6 +7,8 @@ import {
   NativeModules,
   AppState,
   ScrollView,
+  TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,6 +23,9 @@ function MainScreen() {
   const [accessEnabled, setAccessEnabled] = useState(false);
   const [overlayRunning, setOverlayRunning] = useState(false);
   const [lang, setLang] = useState<Lang>('ru');
+  const [testVideoId, setTestVideoId] = useState('');
+  const [testResult, setTestResult] = useState('');
+  const [testing, setTesting] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!OverlayModule) return;
@@ -52,6 +57,27 @@ function MainScreen() {
   const handleStop = async () => {
     await OverlayModule.stopOverlay();
     setOverlayRunning(false);
+  };
+
+  const handleTest = async () => {
+    const videoId = testVideoId.trim().replace(/.*[?&]v=([^&]+).*/, '$1').replace(/.*youtu\.be\/([^?]+).*/, '$1');
+    if (!videoId || videoId.length !== 11) {
+      setTestResult('⚠ Введи корректный video ID (11 символов) или URL');
+      return;
+    }
+    setTesting(true);
+    setTestResult('⏳ Загружаю...');
+    try {
+      await OverlayModule.startOverlay();
+      setOverlayRunning(true);
+      // Send video ID to running overlay service via native module
+      await OverlayModule.testVideoId(videoId);
+      setTestResult(`✓ ID отправлен: ${videoId}\nСмотри результат в оверлее`);
+    } catch (e: any) {
+      setTestResult(`⚠ ${e?.message ?? String(e)}`);
+    } finally {
+      setTesting(false);
+    }
   };
 
   return (
@@ -119,6 +145,37 @@ function MainScreen() {
             <Text style={styles.bigBtnText}>⏹  Остановить оверлей</Text>
           </TouchableOpacity>
         )}
+
+        {/* ── TEST PANEL ─────────────────────────────────────────── */}
+        <Text style={[styles.sectionLabel, { marginTop: 24 }]}>ТЕСТ СУБТИТРОВ</Text>
+        <View style={styles.testBox}>
+          <Text style={styles.testHint}>
+            Вставь YouTube URL или video ID (11 симв.) — оверлей попытается загрузить субтитры и покажет результат прямо в плавающем окне
+          </Text>
+          <TextInput
+            style={styles.testInput}
+            placeholder="https://youtu.be/mgnAjAebtP8 или mgnAjAebtP8"
+            placeholderTextColor="#444"
+            value={testVideoId}
+            onChangeText={setTestVideoId}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <TouchableOpacity
+            style={[styles.bigBtn, { marginTop: 8 }]}
+            onPress={handleTest}
+            disabled={testing}
+          >
+            {testing
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={styles.bigBtnText}>🧪  Проверить субтитры</Text>}
+          </TouchableOpacity>
+          {testResult ? (
+            <View style={styles.testResult}>
+              <Text style={styles.testResultText}>{testResult}</Text>
+            </View>
+          ) : null}
+        </View>
 
         <View style={styles.howTo}>
           <Text style={styles.howToTitle}>КАК ИСПОЛЬЗОВАТЬ</Text>
@@ -224,4 +281,12 @@ const styles = StyleSheet.create({
   },
   howToNumText: { color: '#aaa', fontSize: 12, fontWeight: '700' },
   howToText: { color: '#888', fontSize: 13, flex: 1, lineHeight: 20 },
+  testBox: { backgroundColor: '#111', borderRadius: 12, padding: 14, marginBottom: 10 },
+  testHint: { color: '#555', fontSize: 12, lineHeight: 18, marginBottom: 12 },
+  testInput: {
+    backgroundColor: '#0a0a0a', borderRadius: 8, borderWidth: 1, borderColor: '#2a2a2a',
+    color: '#fff', fontSize: 13, paddingHorizontal: 12, paddingVertical: 10,
+  },
+  testResult: { marginTop: 10, backgroundColor: '#0a0a0a', borderRadius: 8, padding: 10 },
+  testResultText: { color: '#aaa', fontSize: 12, lineHeight: 18 },
 });
