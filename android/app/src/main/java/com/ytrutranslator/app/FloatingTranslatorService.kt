@@ -331,8 +331,9 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-        // Try mobile then desktop URL
+        // Embed page first — no cookies needed, no consent, works for all public videos
         val candidates = listOf(
+            "https://www.youtube.com/embed/$videoId" to desktopUA,
             "https://m.youtube.com/watch?v=$videoId&hl=en" to iphoneUA,
             "https://www.youtube.com/watch?v=$videoId&hl=en" to desktopUA
         )
@@ -346,15 +347,16 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
                 ))
             }.getOrNull() ?: continue
 
-            android.util.Log.d("YTTranslator", "webPage($url): got ${html.length} chars")
+            android.util.Log.d("YTTranslator", "webPage($url): ${html.length} chars")
 
-            // Search for player response — both with and without "var" keyword
-            val json = findPlayerResponseJson(html) ?: continue
-
-            android.util.Log.d("YTTranslator", "playerResponse JSON: ${json.take(120)}")
+            val json = findPlayerResponseJson(html) ?: run {
+                android.util.Log.w("YTTranslator", "no ytInitialPlayerResponse in $url")
+                continue
+            }
+            android.util.Log.d("YTTranslator", "playerResponse: ${json.take(120)}")
 
             val tracks = parseTracks(json)
-            android.util.Log.d("YTTranslator", "tracks from page: ${tracks.size} → ${tracks.map { it.second }}")
+            android.util.Log.d("YTTranslator", "tracks: ${tracks.size} → ${tracks.map { it.second }}")
             if (tracks.isEmpty()) continue
 
             val track = tracks.firstOrNull { it.second == "en" }
@@ -365,8 +367,8 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
                 .replace(Regex("&fmt=[^&]*"), "")
                 .replace(Regex("&tlang=[^&]*"), "")
 
-            val xml = httpGet("$baseUrl&fmt=xml&tlang=$language")
-            android.util.Log.d("YTTranslator", "timedtext XML: ${xml.take(120)}")
+            val xml = runCatching { httpGet("$baseUrl&fmt=xml&tlang=$language") }.getOrNull() ?: continue
+            android.util.Log.d("YTTranslator", "xml: ${xml.take(120)}")
             val segs = parseXml(xml)
             if (segs.isNotEmpty()) return segs
         }
@@ -443,11 +445,26 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         }.getOrNull()
         parseTracks(iosResp).takeIf { it.isNotEmpty() }?.let { return it }
 
-        // Client 2: TVHTML5 Embedded — bypasses many restrictions
+        // Client 2: ANDROID_EMBEDDED_PLAYER — designed for 3rd-party apps, no API key
+        val androidEmbedResp = runCatching {
+            httpPost(
+                "https://www.youtube.com/youtubei/v1/player",
+                """{"videoId":"$videoId","contentCheckOk":true,"racyCheckOk":true,"context":{"client":{"clientName":"ANDROID_EMBEDDED_PLAYER","clientVersion":"17.31.35","androidSdkVersion":30,"hl":"en","gl":"US"},"thirdParty":{"embedUrl":"https://www.youtube.com/"}}}""",
+                mapOf(
+                    "Content-Type" to "application/json",
+                    "User-Agent" to "com.google.android.youtube/17.31.35 (Linux; U; Android 11; en_US; Pixel 4; Build/RQ3A.210805.001; 2t84dn) gzip",
+                    "X-YouTube-Client-Name" to "55",
+                    "X-YouTube-Client-Version" to "17.31.35"
+                )
+            )
+        }.getOrNull()
+        parseTracks(androidEmbedResp).takeIf { it.isNotEmpty() }?.let { return it }
+
+        // Client 3: TVHTML5 Embedded — bypasses many restrictions
         val tvResp = runCatching {
             httpPost(
                 "https://www.youtube.com/youtubei/v1/player",
-                """{"videoId":"$videoId","context":{"client":{"clientName":"TVHTML5_SIMPLY_EMBEDDED_PLAYER","clientVersion":"2.0","hl":"en","gl":"US"},"thirdParty":{"embedUrl":"https://www.youtube.com/"}}}""",
+                """{"videoId":"$videoId","contentCheckOk":true,"racyCheckOk":true,"context":{"client":{"clientName":"TVHTML5_SIMPLY_EMBEDDED_PLAYER","clientVersion":"2.0","hl":"en","gl":"US"},"thirdParty":{"embedUrl":"https://www.youtube.com/"}}}""",
                 mapOf(
                     "Content-Type" to "application/json",
                     "User-Agent" to "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1",
@@ -458,7 +475,7 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         }.getOrNull()
         parseTracks(tvResp).takeIf { it.isNotEmpty() }?.let { return it }
 
-        // Client 3: MWEB — mobile web client
+        // Client 4: MWEB — mobile web client
         val mwebResp = runCatching {
             httpPost(
                 "https://www.youtube.com/youtubei/v1/player",
@@ -473,7 +490,7 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         }.getOrNull()
         parseTracks(mwebResp).takeIf { it.isNotEmpty() }?.let { return it }
 
-        // Client 4: WEB fallback
+        // Client 5: WEB fallback
         val webResp = runCatching {
             httpPost(
                 "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
