@@ -285,7 +285,11 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
 
     // ── Subtitle fetching (runs on executor thread) ────────────────────────────
     private fun fetchSubtitles(videoId: String): List<Segment> {
-        // 1. Try InnerTube (multiple clients)
+        // 1. Parse mobile YouTube page as real Safari — most reliable, gets signed URLs
+        runCatching { fetchViaWebPage(videoId) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() }?.let { return it }
+
+        // 2. InnerTube (4 clients)
         val tracks = fetchCaptionTracks(videoId)
         if (tracks.isNotEmpty()) {
             val track = tracks.firstOrNull { it.second == "en" }
@@ -294,23 +298,77 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
             val baseUrl = track.first
                 .replace(Regex("&fmt=[^&]*"), "")
                 .replace(Regex("&tlang=[^&]*"), "")
-            val xml = runCatching { httpGet("$baseUrl&fmt=xml&tlang=$language") }.getOrNull()
-            val segs = if (xml != null) parseXml(xml) else emptyList()
-            if (segs.isNotEmpty()) return segs
+            runCatching { parseXml(httpGet("$baseUrl&fmt=xml&tlang=$language")) }
+                .getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
         }
 
-        // 2. Fallback: direct YouTube timedtext API (no InnerTube needed)
+        // 3. Direct timedtext API (last resort)
         return fetchViaTimedtextApi(videoId)
     }
 
-    /** Direct timedtext API — works for most public videos with ASR or manual captions */
+    /**
+     * Fetch mobile YouTube page as iPhone Safari, extract ytInitialPlayerResponse,
+     * and load subtitles from signed caption URLs inside it.
+     * This is the same approach used by yt-dlp and works without any API keys.
+     */
+    private fun fetchViaWebPage(videoId: String): List<Segment> {
+        val html = httpGet(
+            "https://m.youtube.com/watch?v=$videoId",
+            mapOf(
+                "User-Agent" to "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language" to "en-US,en;q=0.9"
+            )
+        )
+
+        val marker = "ytInitialPlayerResponse = "
+        val markerIdx = html.indexOf(marker)
+        if (markerIdx == -1) return emptyList()
+
+        val jsonStart = markerIdx + marker.length
+        val json = extractJsonObject(html, jsonStart)
+        if (json.isEmpty()) return emptyList()
+
+        val tracks = parseTracks(json)
+        if (tracks.isEmpty()) return emptyList()
+
+        val track = tracks.firstOrNull { it.second == "en" }
+            ?: tracks.firstOrNull { it.second.startsWith("en") }
+            ?: tracks.first()
+
+        val baseUrl = track.first
+            .replace(Regex("&fmt=[^&]*"), "")
+            .replace(Regex("&tlang=[^&]*"), "")
+
+        val xml = httpGet("$baseUrl&fmt=xml&tlang=$language")
+        return parseXml(xml)
+    }
+
+    /** Extract a balanced JSON object starting at [start] position in [html]. */
+    private fun extractJsonObject(html: String, start: Int): String {
+        var depth = 0
+        var inStr = false
+        var escape = false
+        var i = start
+        while (i < html.length) {
+            val c = html[i]
+            when {
+                escape           -> escape = false
+                c == '\\'&& inStr -> escape = true
+                c == '"'         -> inStr = !inStr
+                !inStr && c == '{' -> { depth++; if (depth == 1 && i > start) { /* skip */ } }
+                !inStr && c == '}' -> { depth--; if (depth == 0) return html.substring(start, i + 1) }
+            }
+            i++
+        }
+        return ""
+    }
+
+    /** Direct timedtext API — fallback when page scraping and InnerTube both fail */
     private fun fetchViaTimedtextApi(videoId: String): List<Segment> {
         val variants = listOf(
-            // Auto-generated English → translated
             "https://www.youtube.com/api/timedtext?v=$videoId&lang=en&fmt=xml&kind=asr&tlang=$language",
-            // Manual English captions → translated
             "https://www.youtube.com/api/timedtext?v=$videoId&lang=en&fmt=xml&tlang=$language",
-            // Auto-generated, no translation (show original as last resort)
             "https://www.youtube.com/api/timedtext?v=$videoId&lang=en&fmt=xml&kind=asr"
         )
         for (url in variants) {
@@ -429,11 +487,13 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
         return conn.inputStream.bufferedReader().readText()
     }
 
-    private fun httpGet(url: String): String {
+    private fun httpGet(url: String, extraHeaders: Map<String, String> = emptyMap()): String {
         val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
+        conn.connectTimeout = 12_000
+        conn.readTimeout = 20_000
+        conn.instanceFollowRedirects = true
         conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+        extraHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
         return conn.inputStream.bufferedReader().readText()
     }
 
