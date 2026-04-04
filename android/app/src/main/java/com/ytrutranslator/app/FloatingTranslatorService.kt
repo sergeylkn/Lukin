@@ -349,7 +349,8 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
 
             android.util.Log.d("YTTranslator", "webPage($url): ${html.length} chars")
 
-            val json = findPlayerResponseJson(html) ?: run {
+            val json = findPlayerResponseJson(html)
+            if (json == null) {
                 android.util.Log.w("YTTranslator", "no ytInitialPlayerResponse in $url")
                 continue
             }
