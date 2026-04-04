@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.*
 import android.speech.tts.TextToSpeech
 import android.view.*
+import android.webkit.*
 import android.widget.*
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
@@ -14,7 +15,9 @@ import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
 
@@ -293,17 +296,20 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
 
     // ── Subtitle fetching (runs on executor thread) ────────────────────────────
     private fun fetchSubtitles(videoId: String): List<Segment> {
-        // 1. Parse YouTube page as real browser (gets signed caption URLs)
-        step("1/3 Загружаю страницу YouTube...")
-        runCatching { fetchViaWebPage(videoId) }.onFailure {
-            android.util.Log.w("YTTranslator", "webPage failed: ${it.message}")
-        }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
+        // 1. WebView (Chromium) — real browser engine, bypasses all bot detection
+        step("1/3 Загружаю через WebView...")
+        runCatching { fetchViaWebView(videoId) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() }?.let { return it }
 
-        // 2. InnerTube API (4 clients)
-        step("2/3 Пробую InnerTube API...")
+        // 2. Raw HTTP page parsing
+        step("2/3 Загружаю страницу YouTube...")
+        runCatching { fetchViaWebPage(videoId) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() }?.let { return it }
+
+        // 3. InnerTube + timedtext API
+        step("3/3 Пробую InnerTube/timedtext...")
         val tracks = fetchCaptionTracks(videoId)
         if (tracks.isNotEmpty()) {
-            android.util.Log.d("YTTranslator", "InnerTube: ${tracks.size} tracks: ${tracks.map { it.second }}")
             val track = tracks.firstOrNull { it.second == "en" }
                 ?: tracks.firstOrNull { it.second.startsWith("en") }
                 ?: tracks.first()
@@ -312,13 +318,83 @@ class FloatingTranslatorService : Service(), TextToSpeech.OnInitListener {
                 .replace(Regex("&tlang=[^&]*"), "")
             runCatching { parseXml(httpGet("$baseUrl&fmt=xml&tlang=$language")) }
                 .getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
-        } else {
-            android.util.Log.w("YTTranslator", "InnerTube: no tracks returned")
+        }
+        return fetchViaTimedtextApi(videoId)
+    }
+
+    /**
+     * Load youtube.com/embed/VIDEO_ID in a headless WebView (Chromium).
+     * Real browser engine → YouTube cannot detect it as a bot.
+     * Extracts ytInitialPlayerResponse via JavaScript, then fetches subtitle XML.
+     * Must be called from a background thread; blocks via CountDownLatch.
+     */
+    private fun fetchViaWebView(videoId: String): List<Segment> {
+        val latch = CountDownLatch(1)
+        val foundTracks = mutableListOf<Pair<String, String>>()
+
+        uiHandler.post {
+            val wv = WebView(applicationContext)
+            wv.settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                // Block images/media to speed up loading
+                blockNetworkImage = true
+                loadsImagesAutomatically = false
+            }
+
+            val bridge = object {
+                @JavascriptInterface
+                fun onData(json: String) {
+                    android.util.Log.d("YTTranslator", "WebView JS data: ${json.take(120)}")
+                    foundTracks.addAll(parseTracks(json))
+                    uiHandler.post { wv.destroy() }
+                    latch.countDown()
+                }
+
+                @JavascriptInterface
+                fun onError(msg: String) {
+                    android.util.Log.w("YTTranslator", "WebView JS error: $msg")
+                    uiHandler.post { wv.destroy() }
+                    latch.countDown()
+                }
+            }
+            wv.addJavascriptInterface(bridge, "YTB")
+
+            wv.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    view.evaluateJavascript(
+                        "try{" +
+                            "var r=window.ytInitialPlayerResponse;" +
+                            "if(r)YTB.onData(JSON.stringify(r));" +
+                            "else YTB.onError('not found');" +
+                        "}catch(e){YTB.onError(e.toString())}",
+                        null
+                    )
+                }
+                override fun onReceivedError(view: WebView, code: Int, desc: String, url: String) {
+                    android.util.Log.w("YTTranslator", "WebView error $code: $desc")
+                    latch.countDown()
+                }
+            }
+            wv.loadUrl("https://www.youtube.com/embed/$videoId?hl=en")
         }
 
-        // 3. Direct timedtext API
-        step("3/3 Прямой timedtext API...")
-        return fetchViaTimedtextApi(videoId)
+        // Wait up to 25 seconds for the page to load and JS to run
+        latch.await(25, TimeUnit.SECONDS)
+
+        if (foundTracks.isEmpty()) return emptyList()
+
+        val track = foundTracks.firstOrNull { it.second == "en" }
+            ?: foundTracks.firstOrNull { it.second.startsWith("en") }
+            ?: foundTracks.first()
+
+        val baseUrl = track.first
+            .replace(Regex("&fmt=[^&]*"), "")
+            .replace(Regex("&tlang=[^&]*"), "")
+
+        android.util.Log.d("YTTranslator", "WebView track: ${track.second}, fetching XML...")
+        return runCatching { parseXml(httpGet("$baseUrl&fmt=xml&tlang=$language")) }
+            .getOrDefault(emptyList())
     }
 
     /**
